@@ -347,6 +347,10 @@ kernel_selector::weights_type to_weights_type(data_types dt) {
         return kernel_selector::weights_type::F8E5M2;
     case cldnn::data_types::f8e8m0:
         return kernel_selector::weights_type::F8E8M0;
+    case cldnn::data_types::ut2:
+        return kernel_selector::weights_type::UT2;
+    case cldnn::data_types::ut1_5:
+        return kernel_selector::weights_type::UT1_5;
     default:
         OPENVINO_THROW("[GPU] Unable to convert cldnn data type ", dt, " to kernel_selector weights type");
     }
@@ -378,6 +382,10 @@ data_types from_weights_type(kernel_selector::weights_type dt) {
         return data_types::f8e5m2;
     case kernel_selector::weights_type::F8E8M0:
         return data_types::f8e8m0;
+    case kernel_selector::weights_type::UT2:
+        return data_types::ut2;
+    case kernel_selector::weights_type::UT1_5:
+        return data_types::ut1_5;
     default:
         OPENVINO_THROW("[GPU] Unable to convert kernel_selector weights type ", kernel_selector::toString(dt), " to cldnn data type");
     }

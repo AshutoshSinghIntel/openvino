@@ -14,6 +14,7 @@ using namespace ov::pass::pattern;
                     output.get_element_type() == ov::element::u2 ||\
                     output.get_element_type() == ov::element::f8e4m3 || output.get_element_type() == ov::element::f8e5m2 ||\
                     output.get_element_type() == ov::element::f4e2m1);\
+                    output.get_element_type() == ov::element::ut2 || output.get_element_type() == ov::element::ut1_5);\
         };\
         \
         auto reshape_squeeze = [](const ov::Output<ov::Node>& output) {\

@@ -907,16 +907,27 @@ void XmlDeserializer::set_constant_num_buffer(ov::AttributeAdapter<std::shared_p
             size);
         adapter.set(buffer);
     } else {
-        if (size < ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3)) {
-            OPENVINO_THROW("Attribute and shape size are inconsistent for ",
-                           node_type,
-                           " op!",
-                           size,
-                           ", ",
-                           ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3),
-                           ", ",
-                           ov::util::get_memory_size(el_type, ov::shape_size(shape)));
-        }
+
+        // if (size < ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3)) {
+        //     const auto type = pugixml::get_str_attr(m_node, "type");
+        //     OPENVINO_THROW("Attribute and shape size are inconsistent for ",
+        //                    type,
+        //                    " op!",
+        //                    size,
+        //                    ", ",
+        //                    ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3),
+        //                    ", ",
+        //                    ov::util::get_memory_size(el_type, ov::shape_size(shape)));
+        // }
+
+            const auto min_size = (el_type == ov::element::ut1_5) ? ov::util::get_memory_size(el_type, ov::shape_size(shape)) : ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3);
+
+            if (size < min_size) {
+                const auto type = pugixml::get_str_attr(m_node, "type");
+                OPENVINO_THROW("Attribute and shape size are inconsistent for ",
+                            type, " op!", size, ", ", min_size, ", ",
+                            ov::util::get_memory_size(el_type, ov::shape_size(shape)));
+            }
 
         auto buffer = m_weights_provider->make_region(offset, size);
         adapter.set(buffer);

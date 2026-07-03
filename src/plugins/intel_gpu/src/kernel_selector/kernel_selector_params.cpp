@@ -202,6 +202,11 @@ void ParamsKey::EnableInputWeightsType(WeightsType wt) {
             break;
         case WeightsType::F8E8M0:
             key.inputWeightsType.val.F8E8M0 = 1;
+        case WeightsType::UT2:
+            key.inputWeightsType.val.ut2 = 1;
+            break;
+        case WeightsType::UT1_5:
+            key.inputWeightsType.val.ut1_5 = 1;
             break;
         default:
             break;
@@ -247,6 +252,11 @@ void ParamsKey::EnableOutputWeightsType(WeightsType wt) {
             break;
         case WeightsType::F8E8M0:
             key.outputWeightsType.val.F8E8M0 = 1;
+        case WeightsType::UT2:
+            key.outputWeightsType.val.ut2 = 1;
+            break;
+        case WeightsType::UT1_5:
+            key.outputWeightsType.val.ut1_5 = 1;
             break;
         default:
             break;
