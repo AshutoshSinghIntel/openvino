@@ -45,6 +45,8 @@ size_t get_bit_elements_count(const element::Type& type, const size_t memory_siz
 size_t get_memory_size(const element::Type& type, const size_t n) {
     if (n == 0) {
         return n;
+    } else if (element::is_base3_type(type)) {
+        return (n + 4) / 5;  // ceil(n/5): 5 trits per byte
     } else if (element::is_split_bit_type(type)) {
         return get_split_bit_memory_size(type, n);
     } else if (element::is_bit_type(type) || element::is_nibble_type(type)) {
@@ -70,6 +72,8 @@ std::optional<size_t> get_memory_size_safe(const element::Type& type, const ov::
 size_t get_elements_capacity(const element::Type& type, const size_t memory_size) {
     if (type.bitwidth() == 0) {
         return 0;
+    } else if (element::is_base3_type(type)) {
+        return memory_size * 5;  // 5 trits per byte
     } else if (element::is_split_bit_type(type)) {
         return get_split_elements_count(type, memory_size);
     } else if (element::is_bit_type(type) || element::is_nibble_type(type)) {

@@ -5,6 +5,9 @@
 #include "include/batch_headers/fetch_data.cl"
 #include "include/batch_headers/fetch_weights.cl"
 #include "include/batch_headers/int4_utils.cl"
+#if COMPRESSED_WEIGHTS_TERNARY
+#include "include/batch_headers/ternary_utils.cl"
+#endif
 
 KERNEL(fc)(
     OPTIONAL_SHAPE_INFO_ARG
@@ -64,6 +67,16 @@ KERNEL(fc)(
                 ACCUMULATOR_TYPE filter_compressed = ((ACCUMULATOR_TYPE*)(&filter_unpacked))[filter_idx % 2];
                 ACCUMULATOR_TYPE filter_val = (filter_compressed - zp) * scale;
                 dotProd += (ACCUMULATOR_TYPE)(input[input0_idx]) * filter_val;
+            #elif COMPRESSED_WEIGHTS_TERNARY
+                #if TERNARY_BASE3_PACKING
+                    FILTER_TYPE filter_packed = weights[filter_idx / 5];
+                    char trit = unpack_trit((uchar)filter_packed, filter_idx % 5);
+                #else
+                    FILTER_TYPE filter_packed = weights[filter_idx / 4];
+                    char trit = unpack_ut2((uchar)filter_packed, filter_idx % 4);
+                #endif
+                ACCUMULATOR_TYPE scaled_input = (ACCUMULATOR_TYPE)(input[input0_idx]) * scale;
+                dotProd += (trit == 2) ? scaled_input : ((trit == 0) ? -scaled_input : ACCUMULATOR_VAL_ZERO);
             #else
                 dotProd += (ACCUMULATOR_TYPE)(input[input0_idx]) * (ACCUMULATOR_TYPE)(weights[filter_idx]);
             #endif
@@ -111,6 +124,16 @@ KERNEL(fc)(
                     ACCUMULATOR_TYPE filter_compressed = ((ACCUMULATOR_TYPE*)(&filter_unpacked))[filter_idx % 2];
                     ACCUMULATOR_TYPE filter_val = (filter_compressed - zp) * scale;
                     dotProd += (ACCUMULATOR_TYPE)(input[input0_idx]) * filter_val;
+                #elif COMPRESSED_WEIGHTS_TERNARY
+                    #if TERNARY_BASE3_PACKING
+                        FILTER_TYPE filter_packed = weights[filter_idx / 5];
+                        char trit = unpack_trit((uchar)filter_packed, filter_idx % 5);
+                    #else
+                        FILTER_TYPE filter_packed = weights[filter_idx / 4];
+                        char trit = unpack_ut2((uchar)filter_packed, filter_idx % 4);
+                    #endif
+                    ACCUMULATOR_TYPE scaled_input = (ACCUMULATOR_TYPE)(input[input0_idx]) * scale;
+                    dotProd += (trit == 2) ? scaled_input : ((trit == 0) ? -scaled_input : ACCUMULATOR_VAL_ZERO);
                 #else
                     dotProd += (ACCUMULATOR_TYPE)(input[input0_idx]) * (ACCUMULATOR_TYPE)(weights[filter_idx]);
                 #endif

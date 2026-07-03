@@ -242,7 +242,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
     ACCUMULATOR_VEC_TYPE acc[TILE_B] = { };
     INPUT_VEC_TYPE       in_0[TILE_B] = { };
 
-    #if !USE_SLM || !COMPRESSED_WEIGHTS_INT4
+    #if !COMPRESSED_WEIGHTS_TERNARY && (!USE_SLM || !COMPRESSED_WEIGHTS_INT4)
         FILTER_VEC_TYPE wei = 0;
     #endif
 
@@ -280,6 +280,11 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
     #else
     uint weights_offset = out_f * (INPUT_ELEMENTS_COUNT / 2);
     #endif
+#elif COMPRESSED_WEIGHTS_TERNARY
+    // Ternary weights: each OFM row is packed into TERNARY_PACKED_WEIGHT_BYTES_PER_OFM bytes.
+    // Layout is simple: weights[(out_f + sglid) * bytes_per_ofm + byte_idx]
+    uint ternary_weight_base = (out_f + sglid) * TERNARY_PACKED_WEIGHT_BYTES_PER_OFM;
+    uint weights_offset = 0; // Not used for ternary; kept for compile compatibility
 #else
     uint weights_offset = out_f * INPUT_ELEMENTS_COUNT;
 #endif
@@ -333,7 +338,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
         #endif
 #endif
 
-#if REALIGN_FP16_OFFSET
+#if REALIGN_FP16_OFFSET && !COMPRESSED_WEIGHTS_TERNARY
     // For fp16 we need to ensure that all block reads are aligned to 4 byte (2 words) boundary.
     // To do this solve first input feature separately.
     {
@@ -501,7 +506,72 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
             barrier(CLK_LOCAL_MEM_FENCE);
         #endif
         unroll_for(uint ki = 0; ki < (TILE_IFM * SIMD) / TILE_K; ++ki) {
-            #if COMPRESSED_WEIGHTS_INT4
+            #if COMPRESSED_WEIGHTS_TERNARY
+                // Ternary path: scalar read + unpack per trit.
+                // Each work-item handles its own OFM row (indexed by sglid for TILE_OFM==1,
+                // or sglid + fi*SIMD for TILE_OFM>1).
+                // We unpack TILE_K trits per iteration and accumulate using conditional add/subtract.
+
+                // Read decompression scale for this group (needed for ternary: acc += trit * scale * input)
+                #if DECOMPRESSION_SCALE_GROUPS_NUM > 1
+                    // Per-group scale: recompute per kii below
+                #elif DECOMPRESSION_SCALE_GROUPS_NUM == 1
+                    #if OUTER_OFM > 1
+                        // handled below per fi
+                    #endif
+                #endif
+
+                unroll_for (uint kii = 0; kii < TILE_K; ++kii) {
+                    const uint total_k = ki * TILE_K + kii;
+                    // Unpack trit for each OFM tile
+                    unroll_for (uint fi = 0; fi < TILE_OFM; ++fi) {
+                        const uint ofm_idx = out_f + fi * SIMD + sglid;
+                        #if TERNARY_BASE3_PACKING
+                            const uint byte_idx = total_k / 5;
+                            const uint pos_in_byte = total_k % 5;
+                            uchar packed_byte = weights[ofm_idx * TERNARY_PACKED_WEIGHT_BYTES_PER_OFM + byte_idx];
+                            // Unpack trit using division: trit = (packed / 3^pos) % 3
+                            uint divisor = 1;
+                            for (uint p = 0; p < pos_in_byte; ++p) divisor *= 3;
+                            char trit = (char)((packed_byte / divisor) % 3);
+                        #else
+                            const uint byte_idx = total_k / 4;
+                            const uint pos_in_byte = total_k % 4;
+                            uchar packed_byte = weights[ofm_idx * TERNARY_PACKED_WEIGHT_BYTES_PER_OFM + byte_idx];
+                            char trit = (char)((packed_byte >> (pos_in_byte * 2)) & 0x3);
+                        #endif
+
+                        // Get scale for this position
+                        #if !DECOMPRESSION_SCALE_POST_OP
+                            #if DECOMPRESSION_SCALE_GROUPS_NUM > 1
+                                const uint scale_offset = (ofm_idx % DECOMPRESSION_SCALE_BATCH_NUM) * DECOMPRESSION_SCALE_BATCH_PITCH +
+                                                        (total_k / DECOMPRESSION_SCALE_GROUP_SIZE) * DECOMPRESSION_SCALE_FEATURE_PITCH;
+                                ACCUMULATOR_TYPE ds = decompression_scale[scale_offset];
+                            #else
+                                #if OUTER_OFM > 1
+                                    ACCUMULATOR_TYPE ds = decompression_scale[ofm_idx];
+                                #else
+                                    ACCUMULATOR_TYPE ds = d_scales[fi % DECOMPRESSION_SCALE_LENGTH];
+                                #endif
+                            #endif
+                        #else
+                            ACCUMULATOR_TYPE ds = ACCUMULATOR_VAL_ONE;
+                        #endif
+
+                        // Ternary accumulation: 0=-1, 1=0, 2=+1
+                        unroll_for (uint bi = 0; bi < TILE_B; ++bi) {
+                            INPUT0_TYPE in_val = _sub_group_shuffle(((INPUT0_TYPE*)(&in_0[bi]))[total_k / SIMD], total_k % SIMD);
+                            ACCUMULATOR_TYPE scaled_in = (ACCUMULATOR_TYPE)(in_val) * ds;
+                            #if TILE_OFM > 1
+                                ((ACCUMULATOR_TYPE*)(&acc_tmp[bi]))[fi] += (trit == 2) ? scaled_in : ((trit == 0) ? -scaled_in : ACCUMULATOR_VAL_ZERO);
+                            #else
+                                acc_tmp[bi] += (trit == 2) ? scaled_in : ((trit == 0) ? -scaled_in : ACCUMULATOR_VAL_ZERO);
+                            #endif
+                        }
+                    }
+                }
+                // No weights_offset advance needed for ternary (we use absolute addressing)
+            #elif COMPRESSED_WEIGHTS_INT4
                 #if USE_SLM
                     FILTER_VEC_TYPE wei = 0;
                     #define LOAD_FROM_SLM(vec2) vec2 = slm_wei_vec[wei_local_idx]; wei_local_idx += SIMD;
@@ -527,7 +597,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
                 wei = TO_FILTER_VEC_TYPE(FILTER_BLOCK_READ(weights, weights_offset));
             #endif
 
-            #if COMPRESSED_WEIGHTS && !USE_SLM
+            #if COMPRESSED_WEIGHTS && !USE_SLM && !COMPRESSED_WEIGHTS_TERNARY
                 ACCUMULATOR_TYPE* w = (ACCUMULATOR_TYPE*)(&wei);
                 unroll_for(uint kii = 0; kii < TILE_K; ++kii) {
                     unroll_for(uint fi = 0; fi < TILE_OFM; ++fi) {
@@ -571,6 +641,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
                 }
             #endif
 
+            #if !COMPRESSED_WEIGHTS_TERNARY
             unroll_for (uint kii = 0; kii < TILE_K; ++kii) {
                 const uint total_k = ki * TILE_K + kii;
                 unroll_for (uint bi = 0; bi < TILE_B; ++bi) {
@@ -593,9 +664,12 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
                     }
                 }
             }
+            #endif // !COMPRESSED_WEIGHTS_TERNARY
+            #if !COMPRESSED_WEIGHTS_TERNARY
             weights_offset += TILE_K_OFM_PACKED * TILE_OFM_PER_OSV_SIZE * SIMD;
+            #endif
 
-#if DECOMPRESSION_SCALE_POST_OP && (TILE_IFM * SIMD > DECOMPRESSION_SCALE_GROUP_SIZE)
+#if DECOMPRESSION_SCALE_POST_OP && (TILE_IFM * SIMD > DECOMPRESSION_SCALE_GROUP_SIZE) && !COMPRESSED_WEIGHTS_TERNARY
             unroll_for (uint bi = 0; bi < TILE_B; ++bi) {
                 unroll_for(uint fi = 0; fi < TILE_OFM; ++fi) {
                     const uint offset_ofm = out_f + fi*SIMD + sglid;
@@ -622,7 +696,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
             }
 #endif
         }
-#if DECOMPRESSION_SCALE_POST_OP && (TILE_IFM * SIMD <= DECOMPRESSION_SCALE_GROUP_SIZE)
+#if DECOMPRESSION_SCALE_POST_OP && (TILE_IFM * SIMD <= DECOMPRESSION_SCALE_GROUP_SIZE) && !COMPRESSED_WEIGHTS_TERNARY
         unroll_for (uint bi = 0; bi < TILE_B; ++bi) {
             unroll_for(uint fi = 0; fi < TILE_OFM; ++fi) {
                 const uint offset_ofm = out_f + fi*SIMD + sglid;
@@ -688,6 +762,54 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
         #undef LOAD_IN_0
         input_offset += TILE_IFM * SIMD - TILE_IN_B_PITCH * TILE_B;
         unroll_for(uint ki = 0; ki < CEIL_DIV(LEFTOVER_IFM, TILE_K); ++ki) {
+            #if COMPRESSED_WEIGHTS_TERNARY
+                // Ternary leftover: same scalar unpack approach
+                unroll_for (uint kii = 0; kii < TILE_K; ++kii) {
+                    const uint total_k = ki * TILE_K + kii;
+                    if (total_k < LEFTOVER_IFM) {
+                        unroll_for (uint fi = 0; fi < TILE_OFM; ++fi) {
+                            const uint ofm_idx = out_f + fi * SIMD + sglid;
+                            #if TERNARY_BASE3_PACKING
+                                const uint abs_k = iterations * TILE_IFM * SIMD + total_k;
+                                const uint byte_idx = abs_k / 5;
+                                const uint pos_in_byte = abs_k % 5;
+                                uchar packed_byte = weights[ofm_idx * TERNARY_PACKED_WEIGHT_BYTES_PER_OFM + byte_idx];
+                                uint divisor = 1;
+                                for (uint p = 0; p < pos_in_byte; ++p) divisor *= 3;
+                                char trit = (char)((packed_byte / divisor) % 3);
+                            #else
+                                const uint abs_k = iterations * TILE_IFM * SIMD + total_k;
+                                const uint byte_idx = abs_k / 4;
+                                const uint pos_in_byte = abs_k % 4;
+                                uchar packed_byte = weights[ofm_idx * TERNARY_PACKED_WEIGHT_BYTES_PER_OFM + byte_idx];
+                                char trit = (char)((packed_byte >> (pos_in_byte * 2)) & 0x3);
+                            #endif
+
+                            #if DECOMPRESSION_SCALE_GROUPS_NUM > 1
+                                const uint scale_offset = (ofm_idx % DECOMPRESSION_SCALE_BATCH_NUM) * DECOMPRESSION_SCALE_BATCH_PITCH +
+                                                        (abs_k / DECOMPRESSION_SCALE_GROUP_SIZE) * DECOMPRESSION_SCALE_FEATURE_PITCH;
+                                ACCUMULATOR_TYPE ds = decompression_scale[scale_offset];
+                            #else
+                                #if OUTER_OFM > 1
+                                    ACCUMULATOR_TYPE ds = decompression_scale[ofm_idx];
+                                #else
+                                    ACCUMULATOR_TYPE ds = d_scales[fi % DECOMPRESSION_SCALE_LENGTH];
+                                #endif
+                            #endif
+
+                            unroll_for (uint bi = 0; bi < TILE_B; ++bi) {
+                                INPUT0_TYPE in_val = _sub_group_shuffle(((INPUT0_TYPE*)(&in_0[bi]))[total_k / SIMD], total_k % SIMD);
+                                ACCUMULATOR_TYPE scaled_in = (ACCUMULATOR_TYPE)(in_val) * ds;
+                                #if TILE_OFM > 1
+                                    ((ACCUMULATOR_TYPE*)(&acc[bi]))[fi] += (trit == 2) ? scaled_in : ((trit == 0) ? -scaled_in : ACCUMULATOR_VAL_ZERO);
+                                #else
+                                    acc[bi] += (trit == 2) ? scaled_in : ((trit == 0) ? -scaled_in : ACCUMULATOR_VAL_ZERO);
+                                #endif
+                            }
+                        }
+                    }
+                }
+            #else // !COMPRESSED_WEIGHTS_TERNARY
             #if USE_SLM
                 FILTER_VEC_TYPE wei = 0;
             #endif
@@ -754,6 +876,7 @@ inline void FUNC(fc_bf_tiled_kernel_default)(
                     }
                 }
             }
+            #endif // !COMPRESSED_WEIGHTS_TERNARY
         }
     }
     #undef LEFTOVER_IFM

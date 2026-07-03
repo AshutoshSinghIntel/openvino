@@ -158,6 +158,12 @@ void ParamsKey::EnableInputWeightsType(WeightsType wt) {
         case WeightsType::BF16:
             key.inputWeightsType.val.BF16 = 1;
             break;
+        case WeightsType::UT2:
+            key.inputWeightsType.val.ut2 = 1;
+            break;
+        case WeightsType::UT1_5:
+            key.inputWeightsType.val.ut1_5 = 1;
+            break;
         default:
             break;
     }
@@ -187,6 +193,12 @@ void ParamsKey::EnableOutputWeightsType(WeightsType wt) {
             break;
         case WeightsType::BF16:
             key.outputWeightsType.val.BF16 = 1;
+            break;
+        case WeightsType::UT2:
+            key.outputWeightsType.val.ut2 = 1;
+            break;
+        case WeightsType::UT1_5:
+            key.outputWeightsType.val.ut1_5 = 1;
             break;
         default:
             break;

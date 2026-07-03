@@ -138,4 +138,14 @@ struct element_type_traits<element::Type_t::f8e8m0> {
     using value_type = ov::float8_e8m0;
 };
 
+template <>
+struct element_type_traits<element::Type_t::ut2> {
+    using value_type = int8_t;
+};
+
+template <>
+struct element_type_traits<element::Type_t::ut1_5> {
+    using value_type = int8_t;
+};
+
 }  // namespace ov

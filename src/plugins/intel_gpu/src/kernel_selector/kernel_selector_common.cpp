@@ -170,6 +170,8 @@ std::string toString(WeightsType wType) {
         case WeightsType::INT8:   return "INT8";
         case WeightsType::UINT8:  return "UINT8";
         case WeightsType::INT32:  return "INT32";
+        case WeightsType::UT2:    return "UT2";
+        case WeightsType::UT1_5:  return "UT1_5";
         default: return "";
     }
 }

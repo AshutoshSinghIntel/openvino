@@ -32,7 +32,7 @@ namespace element {
  * @return True if element type is bit type otherwise false.
  */
 constexpr bool is_bit_type(Type_t et) {
-    return et == u1 || et == u2;
+    return et == u1 || et == u2 || et == ut2;
 }
 
 /**
@@ -58,13 +58,26 @@ constexpr bool is_split_bit_type(Type_t et) {
 }
 
 /**
+ * @brief Checks if element type uses base-3 (ternary) packing.
+ *
+ * 5 trits per byte, values 0-242 representing base-3 encoded ternary data.
+ * Requires custom pack/unpack (not shift+mask).
+ *
+ * @param et  Element type to check
+ * @return True if element type uses base-3 packing otherwise false.
+ */
+constexpr bool is_base3_type(Type_t et) {
+    return et == ut1_5;
+}
+
+/**
  * @brief Checks element type is using only N bytes as value.
  *
  * @param et  Element type to check.
  * @return True if element type use byte(s) for its value, false otherwise.
  */
 constexpr bool is_byte_type(Type_t et) {
-    return !is_bit_type(et) && !is_split_bit_type(et) && !is_nibble_type(et) && et != string;
+    return !is_bit_type(et) && !is_split_bit_type(et) && !is_nibble_type(et) && !is_base3_type(et) && et != string;
 }
 
 /**
@@ -94,6 +107,18 @@ constexpr size_t bit_width<Type_t::u1>() {
 
 template <>
 constexpr size_t bit_width<Type_t::u2>() {
+    return 2;
+}
+
+template <>
+constexpr size_t bit_width<Type_t::ut2>() {
+    return 2;
+}
+
+// Conservative: actual is 1.6 bits/value, but 2 ensures safe buffer allocation.
+// Custom pack/unpack will handle the true 5-values-per-byte layout.
+template <>
+constexpr size_t bit_width<Type_t::ut1_5>() {
     return 2;
 }
 
@@ -394,6 +419,64 @@ public:
 };
 
 /**
+ * @brief The BitProxy specialization for base-3 (ternary) packed types.
+ *
+ * 5 trits per byte using base-3 encoding: byte = v0 + 3*v1 + 9*v2 + 27*v3 + 81*v4
+ * Each value is in range [0, 2]. Maximum encoded byte value is 242 (2+6+18+54+162).
+ *
+ * @tparam T  Fundamental type of sub-byte value.
+ * @tparam ET OpenVINO element type.
+ */
+template <class T, Type_t ET>
+class BitProxy<T, ET, std::enable_if_t<is_base3_type(ET)>> {
+private:
+    template <Type_t, class>
+    friend class Iterator;
+
+    using Bits = std::conditional_t<std::is_const_v<T>, const uint8_t, uint8_t>;
+
+    static constexpr size_t m_num_values = 5;  //!< 5 trits per byte.
+    static constexpr std::array<uint8_t, 5> m_pow3 = {1, 3, 9, 27, 81};  //!< Powers of 3 for extraction.
+
+    Bits* m_ptr;      //!< Pointer to current byte.
+    size_t m_bit_shift;  //!< Current trit index within byte [0..4], named m_bit_shift for Iterator compatibility.
+
+    constexpr BitProxy(T* ptr) noexcept : m_ptr{reinterpret_cast<Bits*>(ptr)}, m_bit_shift{0} {}
+
+public:
+    using value_type = std::decay_t<T>;
+
+    template <class U>
+    constexpr bool operator==(const U& rhs) const {
+        return static_cast<value_type>(*this) == rhs;
+    }
+
+    template <class U>
+    constexpr bool operator<(const U& rhs) const {
+        return static_cast<value_type>(*this) < rhs;
+    }
+
+    /**
+     * @brief Extracts trit value from base-3 encoded byte.
+     * @return Value in range [0, 2].
+     */
+    operator value_type() const {
+        return static_cast<value_type>((*m_ptr / m_pow3[m_bit_shift]) % 3);
+    }
+
+    /**
+     * @brief Sets trit value in base-3 encoded byte.
+     * @param v  Value in range [0, 2].
+     */
+    BitProxy<T, ET>& operator=(const value_type v) {
+        const uint8_t old_trit = (*m_ptr / m_pow3[m_bit_shift]) % 3;
+        // Remove old trit contribution and add new one
+        *m_ptr = static_cast<uint8_t>(*m_ptr - old_trit * m_pow3[m_bit_shift] + v * m_pow3[m_bit_shift]);
+        return *this;
+    }
+};
+
+/**
  * @brief Put BitProxy value to output stream.
  *
  * @param os    Reference to output stream.
@@ -441,6 +524,12 @@ public:
         if constexpr (is_nibble_type(ET)) {
             m_et_ptr.m_bit_shift ^= m_et_ptr.m_bits;
             m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift == m_et_ptr.m_shift_init);
+        } else if constexpr (is_base3_type(ET)) {
+            ++m_et_ptr.m_bit_shift;
+            if (m_et_ptr.m_bit_shift >= m_et_ptr.m_num_values) {
+                m_et_ptr.m_bit_shift = 0;
+                ++m_et_ptr.m_ptr;
+            }
         } else if constexpr (is_split_bit_type(ET)) {
             --m_et_ptr.m_bit_shift;
             m_et_ptr.m_bit_shift = m_et_ptr.m_bit_shift % m_et_ptr.m_num_values;
@@ -469,6 +558,10 @@ public:
             if (n % m_et_ptr.m_num_values) {
                 ++*this;
             }
+        } else if constexpr (is_base3_type(ET)) {
+            const auto advance = n + static_cast<difference_type>(m_et_ptr.m_bit_shift);
+            m_et_ptr.m_bit_shift = static_cast<size_t>(advance % m_et_ptr.m_num_values);
+            m_et_ptr.m_ptr += advance / m_et_ptr.m_num_values;
         } else if constexpr (is_split_bit_type(ET)) {
             const auto advance = n + m_et_ptr.m_shift_init - m_et_ptr.m_bit_shift;
             m_et_ptr.m_bit_shift = m_et_ptr.m_shift_init - (advance % m_et_ptr.m_num_values);
@@ -495,6 +588,13 @@ public:
         if constexpr (is_nibble_type(ET)) {
             m_et_ptr.m_bit_shift ^= m_et_ptr.m_bits;
             m_et_ptr.m_ptr -= static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift == 4);
+        } else if constexpr (is_base3_type(ET)) {
+            if (m_et_ptr.m_bit_shift == 0) {
+                m_et_ptr.m_bit_shift = m_et_ptr.m_num_values - 1;
+                --m_et_ptr.m_ptr;
+            } else {
+                --m_et_ptr.m_bit_shift;
+            }
         } else if constexpr (is_split_bit_type(ET)) {
             ++m_et_ptr.m_bit_shift;
             m_et_ptr.m_bit_shift = m_et_ptr.m_bit_shift % m_et_ptr.m_num_values;
@@ -522,6 +622,15 @@ public:
             m_et_ptr.m_ptr -= n / m_et_ptr.m_num_values;
             if (n % m_et_ptr.m_num_values) {
                 --*this;
+            }
+        } else if constexpr (is_base3_type(ET)) {
+            const auto current = static_cast<difference_type>(m_et_ptr.m_bit_shift);
+            if (n <= current) {
+                m_et_ptr.m_bit_shift = static_cast<size_t>(current - n);
+            } else {
+                const auto advance = n - current - 1;
+                m_et_ptr.m_bit_shift = m_et_ptr.m_num_values - 1 - static_cast<size_t>(advance % m_et_ptr.m_num_values);
+                m_et_ptr.m_ptr -= 1 + advance / m_et_ptr.m_num_values;
             }
         } else if constexpr (is_split_bit_type(ET)) {
             const auto advance = m_et_ptr.m_bit_shift + n;
@@ -634,5 +743,6 @@ template <Type_t ET, class T = typename std::add_const<ov::fundamental_type_for<
 constexpr auto iterator(const void* ptr) -> decltype(iterator<ET, T>(reinterpret_cast<T*>(ptr))) {
     return iterator<ET, T>(reinterpret_cast<T*>(ptr));
 }
+
 }  // namespace element
 }  // namespace ov

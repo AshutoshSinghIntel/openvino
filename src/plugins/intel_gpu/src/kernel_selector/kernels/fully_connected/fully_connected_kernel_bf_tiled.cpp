@@ -285,6 +285,8 @@ ParamsKey FullyConnected_bf_tiled::GetSupportedKey() const {
     k.EnableInputWeightsType(WeightsType::INT8);
     k.EnableInputWeightsType(WeightsType::F16);
     k.EnableInputWeightsType(WeightsType::F32);
+    k.EnableInputWeightsType(WeightsType::UT2);
+    k.EnableInputWeightsType(WeightsType::UT1_5);
     k.EnableInputLayout(DataLayout::bf);
     k.EnableInputLayout(DataLayout::bfyx);
     k.EnableOutputLayout(DataLayout::bf);
@@ -351,6 +353,12 @@ bool FullyConnected_bf_tiled::Validate(const Params& params) const {
 
     auto wt = weights.GetDType();
     if ((wt == WeightsType::UINT4 || wt == WeightsType::INT4) && (weights.IFM().v % 2 != 0)) {
+        DO_NOT_USE_THIS_KERNEL(params.layerID);
+    }
+
+    // Ternary weights only support non-SLM default kernel path
+    if ((wt == WeightsType::UT2 || wt == WeightsType::UT1_5) && fc_params.is_shape_agnostic) {
+        // For now, disable shape-agnostic (dynamic batch) path for ternary to keep it simple
         DO_NOT_USE_THIS_KERNEL(params.layerID);
     }
 
@@ -693,6 +701,18 @@ JitConstants FullyConnected_bf_tiled::GetJitConstants(const fully_connected_para
         // Do not use SCALE_POST_OP for SLM kernel, since it demonstrates worse performance
         if (scale_group_size % simd == 0 && !dispatchData.use_slm)
             add_decompress_scale_post_op = true;
+    } else if (weights_dt == WeightsType::UT2 || weights_dt == WeightsType::UT1_5) {
+        // Ternary weights use scalar reads from packed byte buffer.
+        // tile_k_ofm_packed stays equal to tile_k_ofm (no FILTER_BLOCK_READ used).
+        // The number of packed bytes per OFM row:
+        size_t ifm_size = params.weights.IFM().v;
+        if (weights_dt == WeightsType::UT1_5) {
+            // Base-3 packing: 5 trits per byte
+            jit.AddConstant(MakeJitConstant("TERNARY_PACKED_WEIGHT_BYTES_PER_OFM", (ifm_size + 4) / 5));
+        } else {
+            // UT2 packing: 4 trits per byte (2 bits each)
+            jit.AddConstant(MakeJitConstant("TERNARY_PACKED_WEIGHT_BYTES_PER_OFM", (ifm_size + 3) / 4));
+        }
     }
     if (params.weights.GetLayout() == WeightsLayout::os_is_yx_osv32_isv2) {
         jit.AddConstant(MakeJitConstant("W_IDX", "fi * TILE_K + kii"));
@@ -1030,7 +1050,13 @@ KernelsData FullyConnected_bf_tiled::GetTunedKernelsDataByIndex(const Params &pa
     auto output_f = get_output_aligned_bf_size(fc_params, false).second;
 
     WeightsLayout weights_layout = WeightsLayout::os_iyx_osv16;
-    if (is_swiglu_fused(fc_params)) {
+    if (fc_params.compressed
+        && (fc_params.weights.GetDType() == WeightsType::UT2 || fc_params.weights.GetDType() == WeightsType::UT1_5)) {
+        // Ternary weights use non-power-of-2 packing (5 trits/byte for UT1_5, 4 trits/byte for UT2).
+        // Tiled layouts like os_iyx_osv16 would break the packing. Keep simple oiyx layout
+        // so the kernel can read packed bytes directly with absolute addressing.
+        weights_layout = WeightsLayout::oiyx;
+    } else if (is_swiglu_fused(fc_params)) {
         weights_layout = WeightsLayout::os_is_yx_osv32_isv2;
     } else if (fc_params.compressed && fc_params.inputs[0].GetDType() == Datatype::F16
         && (fc_params.weights.GetLayout() == WeightsLayout::oiyx || fc_params.weights.GetLayout() == WeightsLayout::os_is_yx_osv64_isv2)

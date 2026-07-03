@@ -901,17 +901,26 @@ void XmlDeserializer::set_constant_num_buffer(ov::AttributeAdapter<std::shared_p
         auto buffer = ov::AttributeAdapter<std::shared_ptr<ov::StringAlignedBuffer>>::unpack_string_tensor(data, size);
         adapter.set(buffer);
     } else {
-        if (size < ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3)) {
-            const auto type = pugixml::get_str_attr(m_node, "type");
-            OPENVINO_THROW("Attribute and shape size are inconsistent for ",
-                           type,
-                           " op!",
-                           size,
-                           ", ",
-                           ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3),
-                           ", ",
-                           ov::util::get_memory_size(el_type, ov::shape_size(shape)));
-        }
+        // if (size < ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3)) {
+        //     const auto type = pugixml::get_str_attr(m_node, "type");
+        //     OPENVINO_THROW("Attribute and shape size are inconsistent for ",
+        //                    type,
+        //                    " op!",
+        //                    size,
+        //                    ", ",
+        //                    ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3),
+        //                    ", ",
+        //                    ov::util::get_memory_size(el_type, ov::shape_size(shape)));
+        // }
+
+            const auto min_size = (el_type == ov::element::ut1_5) ? ov::util::get_memory_size(el_type, ov::shape_size(shape)) : ((ov::shape_size(shape) * el_type.bitwidth() + 7) >> 3);
+
+            if (size < min_size) {
+                const auto type = pugixml::get_str_attr(m_node, "type");
+                OPENVINO_THROW("Attribute and shape size are inconsistent for ",
+                            type, " op!", size, ", ", min_size, ", ",
+                            ov::util::get_memory_size(el_type, ov::shape_size(shape)));
+            }
 
         auto buffer = std::make_shared<ov::SharedBuffer<std::shared_ptr<ov::AlignedBuffer>>>(data, size, m_weights);
         adapter.set(buffer);

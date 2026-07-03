@@ -1422,6 +1422,56 @@ public:
     enum class WeightMode { Bit8, Bit4 };
     enum class TargetDevice { SkipDgpu, RunOnDgpu};
 
+    void test_compressed_ut15_scale_ref_path(bool is_caching_test) {
+        auto& engine = get_test_engine();
+
+        auto input_mem = engine.allocate_memory({{1, 10}, data_types::f32, format::bfyx});
+        auto weights_mem = engine.allocate_memory({{2, 10}, data_types::ut1_5, format::bfyx});
+        auto scale_mem = engine.allocate_memory({{2, 1}, data_types::f32, format::bfyx});
+
+        set_values(input_mem, {1.f, 2.f, 3.f, 4.f, 5.f, -1.f, -2.f, -3.f, -4.f, -5.f});
+
+        // UT1_5 packs 5 trits per byte:
+        // byte = t0 + 3*t1 + 9*t2 + 27*t3 + 81*t4
+        //
+        // OFM0 trits: [2,1,0,2,1, 0,1,2,0,1] -> bytes: 140, 102
+        // OFM1 trits: [0,2,1,0,2, 2,0,1,2,0] -> bytes: 177, 65
+        set_values<uint8_t>(weights_mem, {140, 102, 177, 65});
+
+        // Per-OFM scale
+        set_values(scale_mem, {0.5f, -2.0f});
+
+        topology topology(
+            input_layout("input", input_mem->get_layout()),
+            data("weights", weights_mem),
+            data("scale", scale_mem),
+            fully_connected("fc_prim", input_info("input"), "weights", "", "scale", "", data_types::f32, 2, 2)
+        );
+
+        auto config = get_test_default_config(engine);
+        config.set_property(ov::intel_gpu::allow_new_shape_infer(true));
+
+        // Force exact kernel we modified
+        ov::intel_gpu::ImplementationDesc fc_impl_desc = {format::bfyx, "fully_connected_gpu_bfyx_ref", impl_types::ocl};
+        config.set_property(ov::intel_gpu::force_implementations(ov::intel_gpu::ImplForcingMap{{"fc_prim", fc_impl_desc}}));
+
+        network::ptr network = get_network(engine, topology, config, get_test_stream_ptr(), is_caching_test);
+        network->set_input_data("input", input_mem);
+
+        auto outputs = network->execute();
+        ASSERT_EQ(outputs.size(), size_t(1));
+        ASSERT_EQ(outputs.begin()->first, "fc_prim");
+
+        auto output_mem = outputs.begin()->second.get_memory();
+        cldnn::mem_lock<float> output_ptr(output_mem, get_test_stream());
+
+        // Expected:
+        // OFM0 dot = 4, scaled by 0.5  =>  2
+        // OFM1 dot = 4, scaled by -2.0 => -8
+        ASSERT_FLOAT_EQ(output_ptr[0], 2.f);
+        ASSERT_FLOAT_EQ(output_ptr[1], -8.f);
+    }
+
     void test_compressed_scale_zp_bias(bool is_caching_test) {
         auto& engine = get_test_engine();
 
@@ -5794,6 +5844,14 @@ TEST_F(fully_connected_gpu_tests, onednn_acc_test_compressed_weight_int4_group_s
 
 TEST_F(fully_connected_gpu_tests, onednn_acc_test_compressed_weight_int8_group_scale_scalar_zp_gs16) {
     this->test_comp_weight_scale_zp(false, 64, 256, 2048, 0, 16, 16, WzpMode::Symmetric, WeightMode::Bit8);
+}
+
+TEST_F(fully_connected_gpu_tests, compressed_ut15_scale_ref_path) {
+    this->test_compressed_ut15_scale_ref_path(false);
+}
+
+TEST_F(fully_connected_gpu_tests, compressed_ut15_scale_ref_path_cached) {
+    this->test_compressed_ut15_scale_ref_path(true);
 }
 
 using fully_connected_dynamic_test_params = std::tuple<
