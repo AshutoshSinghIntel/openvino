@@ -454,6 +454,8 @@ static std::string get_value(const std::shared_ptr<ov::op::v0::Constant>& consta
     case ov::element::Type_t::u4:
     case ov::element::Type_t::u6:
     case ov::element::Type_t::nf4:
+    case ov::element::Type_t::ut2:
+    case ov::element::Type_t::ut1_5:
     case ov::element::Type_t::i4:
     case ov::element::Type_t::f8e4m3:
     case ov::element::Type_t::f8e5m2:

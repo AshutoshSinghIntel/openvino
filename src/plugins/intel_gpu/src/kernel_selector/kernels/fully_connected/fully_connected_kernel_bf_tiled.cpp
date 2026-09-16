@@ -713,7 +713,8 @@ JitConstants FullyConnected_bf_tiled::GetJitConstants(const fully_connected_para
         // Do not use SCALE_POST_OP for SLM kernel, since it demonstrates worse performance
         if (scale_group_size % simd == 0 && !dispatchData.use_slm) {
             add_decompress_scale_post_op = true;
-        } else if (weights_dt == WeightsType::UT2 || weights_dt == WeightsType::UT1_5) {
+        }
+    } else if (weights_dt == WeightsType::UT2 || weights_dt == WeightsType::UT1_5) {
         // Ternary weights use scalar reads from packed byte buffer.
         // tile_k_ofm_packed stays equal to tile_k_ofm (no FILTER_BLOCK_READ used).
         // The number of packed bytes per OFM row:

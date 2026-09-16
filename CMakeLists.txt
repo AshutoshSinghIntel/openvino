@@ -44,6 +44,27 @@ project(OpenVINO
         HOMEPAGE_URL "https://docs.openvino.ai/2026/index.html"
         LANGUAGES C CXX)
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+    # icx's clang-cl mode still pulls in MSVC's CRT headers, which mark plain
+    # getenv/gmtime/etc. deprecated; under /WX that becomes fatal everywhere
+    # they're used (getenv alone is used throughout common/util). MSVC's own
+    # cl.exe builds are unaffected since this only applies to IntelLLVM.
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    # Clang enforces that a constexpr function must be callable in SOME constant
+    # expression; existing Windows utility code (e.g. HANDLE != INVALID_HANDLE_VALUE
+    # inside a constexpr fn) relies on MSVC's more lenient behavior here.
+    add_compile_options(-Wno-invalid-constexpr)
+    # oneAPI's own <sycl/sycl.hpp> headers reference deprecated SYCL 1.2.1 aliases
+    # internally (cl_float, cl_uchar, ...); this recurs in every target that
+    # includes it (impls/sycl, runtime/ocl/sycl_engine, ...), so suppress globally
+    # rather than per-target.
+    add_compile_options(-Wno-deprecated-declarations)
+    # Existing GPU kernel_selector code declares literal operators with a space
+    # before the suffix (operator"" _jit), a pre-C++17 compatibility form MSVC
+    # accepts silently but Clang flags as deprecated.
+    add_compile_options(-Wno-deprecated-literal-operator)
+endif()
+
 find_package(OpenVINODeveloperScripts REQUIRED
              PATHS "${OpenVINO_SOURCE_DIR}/cmake/developer_package"
              NO_CMAKE_FIND_ROOT_PATH

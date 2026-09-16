@@ -434,16 +434,16 @@ public:
         if constexpr (is_nibble_type(ET)) {
             m_et_ptr.m_bit_shift ^= m_et_ptr.m_bits;
             m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift == m_et_ptr.m_shift_init);
-        } else if constexpr (is_lsb_packed(ET)) {
-            m_et_ptr.m_bit_shift += m_et_ptr.m_bits;
-            m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift / 8);
-            m_et_ptr.m_bit_shift %= 8;
         } else if constexpr (is_base3_type(ET)) {
             ++m_et_ptr.m_bit_shift;
             if (m_et_ptr.m_bit_shift >= m_et_ptr.m_num_values) {
                 m_et_ptr.m_bit_shift = 0;
                 ++m_et_ptr.m_ptr;
             }
+        } else if constexpr (is_lsb_packed(ET)) {
+            m_et_ptr.m_bit_shift += m_et_ptr.m_bits;
+            m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift / 8);
+            m_et_ptr.m_bit_shift %= 8;
         } else {
             m_et_ptr.m_bit_shift -= m_et_ptr.m_bits;
             m_et_ptr.m_bit_shift = m_et_ptr.m_bit_shift % 8;
@@ -491,11 +491,6 @@ public:
         if constexpr (is_nibble_type(ET)) {
             m_et_ptr.m_bit_shift ^= m_et_ptr.m_bits;
             m_et_ptr.m_ptr -= static_cast<std::ptrdiff_t>(m_et_ptr.m_bit_shift == 4);
-        } else if constexpr (is_lsb_packed(ET)) {
-            // Biased by one byte to keep the arithmetic unsigned when the value starts in the previous byte.
-            const auto shift = m_et_ptr.m_bit_shift + 8 - m_et_ptr.m_bits;
-            m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(shift / 8) - 1;
-            m_et_ptr.m_bit_shift = shift % 8;
         } else if constexpr (is_base3_type(ET)) {
             if (m_et_ptr.m_bit_shift == 0) {
                 m_et_ptr.m_bit_shift = m_et_ptr.m_num_values - 1;
@@ -503,6 +498,11 @@ public:
             } else {
                 --m_et_ptr.m_bit_shift;
             }
+        } else if constexpr (is_lsb_packed(ET)) {
+            // Biased by one byte to keep the arithmetic unsigned when the value starts in the previous byte.
+            const auto shift = m_et_ptr.m_bit_shift + 8 - m_et_ptr.m_bits;
+            m_et_ptr.m_ptr += static_cast<std::ptrdiff_t>(shift / 8) - 1;
+            m_et_ptr.m_bit_shift = shift % 8;
         } else {
             m_et_ptr.m_bit_shift += m_et_ptr.m_bits;
             m_et_ptr.m_bit_shift = m_et_ptr.m_bit_shift % 8;

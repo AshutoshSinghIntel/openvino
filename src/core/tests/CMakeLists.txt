@@ -93,6 +93,7 @@ set(OV_CORE_TESTS_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/type_prop_layers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/type_relaxed_copy.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/uint4.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ut1_5.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/validation_utils.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/weight_sharing_util_test.cpp
 )
